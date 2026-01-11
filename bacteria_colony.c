@@ -13,6 +13,11 @@ int thread_count, nr_gens;
 
 pthread_barrier_t barrier_swap;
 
+void Allocate_and_init(int rank, double **grid, double **new_grid, int local_rows);
+void Exchange_frontiers(int rank, int size, double *grid, int local_rows);
+void Compute_local(int rank, int size, double *grid, double *new_grid, int local_rows);
+void Aggregate_final(int rank, double *grid, int local_rows);
+
 void mem_alloc()
 {
     grid_serial = (char*) malloc(n*m*sizeof(char));
@@ -225,25 +230,43 @@ void* evolve_p(void* rank)
     return NULL;
 }
 
-void evolve_parallel()
+void evolve_parallel_1D(int N)
 {
-    
-    pthread_t* thread_handles = malloc(thread_count * sizeof(pthread_t));
-    int *tid;
-    tid = malloc(thread_count * sizeof(int));
-    
-    pthread_barrier_init(&barrier_swap, NULL, thread_count);
-    for( int thread=0; thread<thread_count; thread++)
+    int rank, size;
+
+    if (rank > 0)
     {
-        tid[thread] = thread;
-        pthread_create(&thread_handles[thread], NULL, evolve_p,  &tid[thread]);
+        MPI_Init(NULL, NULL);
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     }
-    for( int thread=0; thread<thread_count; thread++)
+
+    if (N % size != 0)
     {
-        pthread_join(thread_handles[thread], NULL);
+        if (rank == 0)
+            printf("N=%d is not divisible by number of processes (size=%d) \n", N, size);
+        MPI_Finalize();
+        exit(1);
     }
-    
-    pthread_barrier_destroy(&barrier_swap);
+
+    double *grid, *new_grid;
+    int local_rows = N / size;
+    int status;
+
+    Allocate_and_init(rank, &grid, &new_grid, local_rows);
+
+    for (int t = 0; t < MAXITER; t++)
+    {
+        Exchange_frontiers(rank, size, grid, local_rows);
+
+        Compute_local(rank, size, grid, new_grid, local_rows);
+
+        double *tmp = grid;
+        grid = new_grid;
+        new_grid = tmp;
+    }
+
+    Aggregate_final(rank, grid, local_rows);
 
     free(thread_handles);
     free(tid);
@@ -273,10 +296,8 @@ int main(int argc, char *argv[])
     strcat(serial_file,"_serial_out.txt");
     strcat(parallel_file,"_parallel_out.txt");
 
-
     read_grid(argv[1]);
     
-
     struct timespec start, finish;
     double elapsed_serial,elapsed_parallel;
     printf("Start Serial with %d generations\n", nr_gens);
@@ -290,11 +311,9 @@ int main(int argc, char *argv[])
     printf("Elapsed serial time =%lf \n", elapsed_serial);
     write_output(serial_file,grid_serial);
     
-
-
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    evolve_parallel();
+    evolve_parallel_1D();
     
     clock_gettime(CLOCK_MONOTONIC, &finish);
     elapsed_parallel = (finish.tv_sec - start.tv_sec);
