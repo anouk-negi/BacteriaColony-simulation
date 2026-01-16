@@ -9,13 +9,12 @@
 #define COMPARE_SERIAL
 
 char* initial_grid;
-char* groundtruth;
 
 int n,m;
 int nr_gens;
 double start_time; 
 
-char *compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens);
+void *compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens);
 int equal_grids(char *g1, char *g2);
 void init_grid(char* grid, int n, int m);
 void get_output_filename(char *input, char *output);
@@ -26,11 +25,9 @@ void exchange_frontiers(int rank, int size, char* grid, int local_rows);
 int count_bacteria(int i, int j, int local_n, int m, char* grid);
 
 
-void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, int n, int m, int comm_sz)
+void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, int n, int m, int* sendcount, int* displs)
 {
     char *whole_grid = NULL;
-    int* sendcount = NULL;
-    int* displs = NULL;
     if (rank == 0)
     {
         whole_grid = (char*) malloc(n * m * sizeof(char));
@@ -39,38 +36,6 @@ void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, i
             printf("Rank %d: Cannot allocate grid.\n",rank);
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
-    }
-
-    sendcount = (int*)malloc(comm_sz * sizeof(int));
-    if(sendcount == NULL)
-    {
-        free(whole_grid);
-        printf("Rank %d: Cannot allocate sendcount.\n",rank);
-        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-    }
-    displs = (int*)malloc(comm_sz * sizeof(int));
-    if(displs == NULL)
-    {
-        free(whole_grid);
-        free(sendcount);
-        printf("Rank %d: Cannot allocate displs.\n",rank);
-        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-    }
-
-    int sum = 0;
-
-    for(int i=0; i < comm_sz; i++)
-    {
-        int rows = n/comm_sz;
-        if(i == comm_sz - 1)
-        {
-            rows += n%comm_sz;
-        }
-
-        sendcount[i] = rows * m;
-
-        displs[i] = sum;
-        sum += sendcount[i];
     }
 
     if (rank == 0) {
@@ -93,8 +58,6 @@ void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, i
         {
             free(whole_grid);
         }
-        free(sendcount);
-        free(displs);
         printf("Rank %d: Cannot allocate local grids.\n",rank);
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
@@ -105,8 +68,6 @@ void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, i
         {
             free(whole_grid);
         }
-        free(sendcount);
-        free(displs);
         free(*grid);
         printf("Rank %d: Cannot allocate new local grids.\n",rank);
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
@@ -132,8 +93,6 @@ void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, i
     {
         free(whole_grid);
     }
-    free(sendcount);
-    free(displs);
 }
 
 
@@ -185,7 +144,7 @@ void compute_local(int local_rows,char *grid, char *new_grid)
     }
 }
 
-void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* output_file, int nr_gens, int comm_sz)
+void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* output_file, int nr_gens, int* recvcount, int* displs)
 {
     char *whole_grid;
     if (rank == 0) {
@@ -196,42 +155,6 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
     }
-    int *recvcount = (int*)malloc(comm_sz * sizeof(int));
-    if(recvcount == NULL)
-    {
-        if(rank == 0)
-        {
-            free(whole_grid);
-        }
-        printf("Rank %d: Cannot allocate sendcount.\n",rank);
-        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-    }
-    int *displs = (int*)malloc(comm_sz * sizeof(int));
-    if(displs == NULL)
-    {
-        if(rank == 0)
-        {
-            free(whole_grid);
-        }
-        free(recvcount);
-        printf("Rank %d: Cannot allocate displs.\n",rank);
-        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-    }
-    int sum =0;
-
-    for(int i=0; i < comm_sz; i++)
-    {
-        int rows = n/comm_sz;
-        if(i == comm_sz - 1)
-        {
-            rows += n%comm_sz;
-        }
-
-        recvcount[i] = rows * m;
-
-        displs[i] = sum;
-        sum += recvcount[i];
-    }
     
     MPI_Gatherv(grid + m, recvcount[rank], MPI_CHAR,
          whole_grid, recvcount, displs, MPI_CHAR, 0, MPI_COMM_WORLD);
@@ -240,7 +163,8 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
     if(rank == 0)
     {
         double end_time = MPI_Wtime();
-        printf("MPI 1D decomposition time: %f seconds\n", end_time - start_time);
+        double parallel_time = end_time - start_time;
+        printf("MPI 1D decomposition time: %f seconds\n", parallel_time);
         fflush(stdout);
 
         print_grid(output_file, whole_grid, m, n, rank);
@@ -258,8 +182,6 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
             if(serial_grid == NULL)
             {
                 free(whole_grid);
-                free(recvcount);
-                free(displs);
                 printf("Rank %d: Cannot allocate serial grid.\n",rank);
                 MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             }
@@ -267,8 +189,6 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
             if (serial_new_grid == NULL)
             {
                 free(whole_grid);
-                free(recvcount);
-                free(displs);
                 free(serial_grid);
                 printf("Rank %d: Cannot allocate serial grid.\n",rank);
                 MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
@@ -279,21 +199,22 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
             compute_serial(serial_grid, serial_new_grid,n,m,nr_gens);
             double end_time_s = MPI_Wtime();
 
-            printf("Serial elapsed time: %f seconds\n", end_time_s - start_time_s);
+            double serial_time = end_time_s - start_time_s;
+
+            printf("Serial elapsed time: %f seconds\n", serial_time);
 
             if (!equal_grids(whole_grid, serial_grid))
                 printf("Serial and parallel results are different!!!!\n");
             else
                 printf("Serial and parallel results are equal.\n");
+
+            printf("Speedup = %.2f\n", serial_time/parallel_time);
             free(serial_grid);
             free(serial_new_grid);
         }
         #endif
         free(whole_grid);
     }
-
-    free(recvcount);
-    free(displs);
 }
 
 
@@ -301,8 +222,7 @@ int main(int argc, char *argv[])
 {
     int my_rank, comm_sz, nr_gens;
     char output_file[MAX_FILENAME];
-    char* local_slice;
-
+    
     MPI_Init(NULL, NULL);
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &comm_sz);
@@ -321,9 +241,39 @@ int main(int argc, char *argv[])
     {
         local_rows += n % comm_sz;
     }
+    
+    int *sendcount = (int*)malloc(comm_sz *sizeof(int));
+    if(sendcount == NULL)
+    {
+        printf("Rank %d: Cannot allocate sendcount.\n",my_rank);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+    int *displs = (int*)malloc(comm_sz * sizeof(int));
+    if(displs == NULL)
+    {
+        free(sendcount);
+        printf("Rank %d: Cannot allocate displs.\n",my_rank);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    int sum = 0;
+
+    for(int i=0; i < comm_sz; i++)
+    {
+        int rows = n/comm_sz;
+        if(i == comm_sz - 1)
+        {
+            rows += n%comm_sz;
+        }
+
+        sendcount[i] = rows * m;
+
+        displs[i] = sum;
+        sum += sendcount[i];
+    }
 
     char *grid, *new_grid; 
-    allocate_and_init(my_rank,&grid, &new_grid, local_rows, n, m, comm_sz);
+    allocate_and_init(my_rank,&grid, &new_grid, local_rows, n, m, sendcount, displs);
 
     //making the hallos '.' so they don't interfere with neighbor counting calculation
     init_halos(grid, local_rows, m);
@@ -347,10 +297,12 @@ int main(int argc, char *argv[])
         get_output_filename(argv[1], output_file);
     }
 
-    aggregate_final(my_rank, grid, local_rows, n, m, output_file, nr_gens, comm_sz);
+    aggregate_final(my_rank, grid, local_rows, n, m, output_file, nr_gens, sendcount, displs);
 
     free(grid);
     free(new_grid);
+    free(sendcount);
+    free(displs);
     if (my_rank == 0 && initial_grid != NULL) {
         free(initial_grid);
     }
@@ -368,7 +320,7 @@ void init_grid(char* grid, int n, int m)
 }
 
 
-char* compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens)
+void* compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens)
 {
     int neighbors;
     for(int k=0; k<nr_gens; k++)
@@ -396,7 +348,9 @@ char* compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens
         serial_grid = new_grid;
         new_grid = tmp;
     }
-    print_grid("stdout",serial_grid, m,n, 0);
+    #ifdef DEBUG
+        print_grid("stdout",serial_grid, m,n, 0);
+    #endif
 }
 
 int equal_grids(char *g1, char *g2)
