@@ -14,14 +14,14 @@ int n,m;
 int nr_gens;
 double start_time; 
 
-void *compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens);
+void compute_serial(char** serial_grid,char** new_grid, int n, int m, int nr_gens);
 int equal_grids(char *g1, char *g2);
 void init_grid(char* grid, int n, int m);
 void get_output_filename(char *input, char *output);
 void read_init_grid(char* input_filename, int* n, int* m, int my_rank, int comm_sz);
 void print_grid(char* filename, char* grid, int m, int n, int my_rank);
 void init_halos(char *grid, int local_rows, int m);
-void exchange_frontiers(int rank, int size, char* grid, int local_rows);
+void exchange_frontiers(int rank, int size, char* grid, int local_rows, int m);
 int count_bacteria(int i, int j, int local_n, int m, char* grid);
 
 
@@ -96,7 +96,8 @@ void allocate_and_init(int rank, char **grid, char **new_grid, int local_rows, i
 }
 
 
-void exchange_frontiers(int rank, int size, char* grid, int local_rows)
+void exchange_frontiers(int rank, int size, char* grid, int local_rows, int m
+)
 {
     MPI_Status status;
 
@@ -170,8 +171,8 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
         print_grid(output_file, whole_grid, m, n, rank);
 
         #ifdef DEBUG
-            printf("Final grid: \n");
-            print_grid("stdout", whole_grid, m, n, rank);
+                printf("Final grid: \n");
+                print_grid("stdout", whole_grid, m, n, rank);
         #endif
 
 
@@ -196,7 +197,7 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
 
             init_grid(serial_grid, n, m);
             double start_time_s = MPI_Wtime();
-            compute_serial(serial_grid, serial_new_grid,n,m,nr_gens);
+            compute_serial(&serial_grid, &serial_new_grid,n,m,nr_gens);
             double end_time_s = MPI_Wtime();
 
             double serial_time = end_time_s - start_time_s;
@@ -208,7 +209,7 @@ void aggregate_final(int rank, char* grid, int local_rows, int n, int m, char* o
             else
                 printf("Serial and parallel results are equal.\n");
 
-            printf("Speedup = %.2f\n", serial_time/parallel_time);
+            printf("Speedup = %.3f\n", serial_time/parallel_time);
             free(serial_grid);
             free(serial_new_grid);
         }
@@ -279,12 +280,21 @@ int main(int argc, char *argv[])
     init_halos(grid, local_rows, m);
     init_halos(new_grid, local_rows, m);
 
-    //print_global_grid(initial_grid,n,m,my_rank,comm_sz);
-    nr_gens = atoi(argv[2]); //to do: maybe check
+
+    nr_gens = atoi(argv[2]);
+    if (nr_gens <= 0 && strcmp(argv[2], "0") != 0) {
+        if (my_rank == 0) 
+        {
+            printf("Error: Invalid number of generations '%s'\n", argv[2]);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
+
     for (int i = 0; i < nr_gens; i++)
     {
 
-        exchange_frontiers(my_rank, comm_sz, grid, local_rows);
+        exchange_frontiers(my_rank, comm_sz, grid, local_rows,m);
 
         compute_local(local_rows,grid, new_grid);
         char *tmp = grid;
@@ -320,8 +330,10 @@ void init_grid(char* grid, int n, int m)
 }
 
 
-void* compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens)
+void compute_serial(char** serial_grid,char** new_grid, int n, int m, int nr_gens)
 {
+    char* local_grid = *serial_grid;
+    char* local_new = *new_grid;
     int neighbors;
     for(int k=0; k<nr_gens; k++)
     {
@@ -329,27 +341,30 @@ void* compute_serial(char* serial_grid,char* new_grid, int n, int m, int nr_gens
         {
             for(int j=0; j<m;j++)
             {
-                neighbors=count_bacteria(i,j,n,m,serial_grid);
-                if(serial_grid[i*m+j]=='.' && neighbors==3)
+                neighbors=count_bacteria(i,j,n,m,local_grid);
+                if(local_grid[i*m+j]=='.' && neighbors==3)
                 {
-                    new_grid[i*m+j]='X';
+                    local_new[i*m+j]='X';
                 }
-                else if(serial_grid[i*m+j]=='X' && (neighbors<2 || neighbors>3))
+                else if(local_grid[i*m+j]=='X' && (neighbors<2 || neighbors>3))
                 {
-                    new_grid[i*m+j]='.';
+                    local_new[i*m+j]='.';
                 }
                 else
                 {
-                    new_grid[i*m+j]=serial_grid[i*m+j];
+                    local_new[i*m+j]=local_grid[i*m+j];
                 }
             }
         }
-        char *tmp = serial_grid;
-        serial_grid = new_grid;
-        new_grid = tmp;
+
+        char* temp = local_grid;
+        local_grid = local_new;
+        local_new = temp;
     }
+    *serial_grid = local_grid;
+    *new_grid = local_new;
     #ifdef DEBUG
-        print_grid("stdout",serial_grid, m,n, 0);
+        print_grid("stdout",*serial_grid, m,n, 0);
     #endif
 }
 
@@ -366,7 +381,6 @@ void get_output_filename(char *input, char *output)
 {
     char base[MAX_FILENAME];
     strcpy(base, input);
-    //if the input file is f.txt, extract f
     char *dot = strrchr(base,'.');
     if (dot) 
     {
@@ -389,7 +403,7 @@ void read_init_grid(char* input_filename, int* n, int* m, int my_rank, int comm_
         if (fscanf(fin, "%d %d", n, m) != 2) {
             fprintf(stderr, "Invalid file format\n");
             fclose(fin);
-            return;
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
 
         initial_grid = (char*) malloc((*n) * (*m) *sizeof(char));
